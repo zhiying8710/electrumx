@@ -93,6 +93,8 @@ class Env(EnvBase):
         self.session_group_by_subnet_ipv6 = self.integer('SESSION_GROUP_BY_SUBNET_IPV6', 48)
         self._check_and_fix_cost_limits()
 
+        self.unsync_mempool = self.integer('UNSYNC_MEMPOOL', 0)
+
         # Services last - uses some env vars above
 
         self.services = self.services_to_run()

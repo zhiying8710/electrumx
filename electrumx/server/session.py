@@ -1160,15 +1160,41 @@ class ElectrumX(SessionBase):
         effects.'''
         utxos = await self.db.all_utxos(hashX)
         utxos = sorted(utxos)
-        utxos.extend(await self.mempool.unordered_UTXOs(hashX))
+        mempool = await self._hashX_listmempool(hashX)
+        utxos.extend(mempool["unordereds"])
         self.bump_cost(1.0 + len(utxos) / 50)
-        spends = await self.mempool.potential_spends(hashX)
+        spends = mempool["spends"]
 
         return [{'tx_hash': hash_to_hex_str(utxo.tx_hash),
                  'tx_pos': utxo.tx_pos,
                  'height': utxo.height, 'value': utxo.value}
                 for utxo in utxos
                 if (utxo.tx_hash, utxo.tx_pos) not in spends]
+
+    async def _hashX_listmempool(self, hashX):
+        return {
+            "unordereds": await self.mempool.unordered_UTXOs(hashX),
+            "spends": await self.mempool.potential_spends(hashX)
+        }
+
+    async def hashX_listmempool(self, hashX):
+        mempool = await self._hashX_listmempool(hashX)
+        spends = mempool.pop("spends")
+        dict_spends = []
+        for spend in spends:
+            dict_spends.append({
+                "tx_hash": hash_to_hex_str(spend[0]),
+                "tx_pos": spend[1]
+            })
+        unordereds = mempool.pop("unordereds")
+        mempool["unordereds"] = [
+            {'tx_hash': hash_to_hex_str(utxo.tx_hash),
+             'tx_pos': utxo.tx_pos,
+             'height': utxo.height, 'value': utxo.value}
+            for utxo in unordereds
+        ]
+        mempool['spends'] = dict_spends
+        return mempool
 
     async def hashX_subscribe(self, hashX, alias):
         # Store the subscription only after address_status succeeds
@@ -1220,6 +1246,10 @@ class ElectrumX(SessionBase):
         '''Return the list of UTXOs of a scripthash.'''
         hashX = scripthash_to_hashX(scripthash)
         return await self.hashX_listunspent(hashX)
+
+    async def scripthash_listmempool(self, scripthash):
+        hashX = scripthash_to_hashX(scripthash)
+        return await self.hashX_listmempool(hashX)
 
     async def scripthash_subscribe(self, scripthash):
         '''Subscribe to a script hash.
@@ -1538,6 +1568,7 @@ class ElectrumX(SessionBase):
             'blockchain.scripthash.get_history': self.scripthash_get_history,
             'blockchain.scripthash.get_mempool': self.scripthash_get_mempool,
             'blockchain.scripthash.listunspent': self.scripthash_listunspent,
+            'blockchain.scripthash.listmempool': self.scripthash_listmempool,
             'blockchain.scripthash.subscribe': self.scripthash_subscribe,
             'blockchain.transaction.broadcast': self.transaction_broadcast,
             'blockchain.transaction.get': self.transaction_get,

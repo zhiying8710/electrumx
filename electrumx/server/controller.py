@@ -111,7 +111,7 @@ class Controller(ServerBase):
             notifications.raw_transactions = daemon.getrawtransactions
             notifications.lookup_utxos = db.lookup_utxos
             MemPoolAPI.register(Notifications)
-            mempool = MemPool(env.coin, notifications)
+            mempool = MemPool(env, notifications)
 
             session_mgr = SessionManager(env, db, bp, daemon, mempool,
                                          shutdown_event)

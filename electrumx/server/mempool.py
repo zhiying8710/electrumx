@@ -107,9 +107,10 @@ class MemPool:
        hashXs: hashX   -> set of all hashes of txs touching the hashX
     '''
 
-    def __init__(self, coin: Type['Coin'], api: MemPoolAPI, refresh_secs=5.0, log_status_secs=60.0):
+    def __init__(self, env, api: MemPoolAPI, refresh_secs=5.0, log_status_secs=60.0):
         assert isinstance(api, MemPoolAPI)
-        self.coin = coin
+        self.env = env
+        self.coin = env.coin
         self.api = api
         self.logger = class_logger(__name__, self.__class__.__name__)
         self.txs = {}
@@ -366,6 +367,10 @@ class MemPool:
     #
 
     async def keep_synchronized(self, synchronized_event):
+        if self.env.unsync_mempool:
+            synchronized_event.set()
+            synchronized_event.clear()
+            return
         '''Keep the mempool synchronized with the daemon.'''
         async with OldTaskGroup() as group:
             await group.spawn(self._refresh_hashes(synchronized_event))
