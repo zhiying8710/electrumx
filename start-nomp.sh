@@ -2,7 +2,7 @@
 
 export COIN=Bitcoin
 export DB_DIRECTORY=/home/ubuntu/.electrumx/data-nomp
-export DAEMON_URL=http://idclub:Bitcoin2088@172.31.26.43:2078/
+export DAEMON_URL=http://idclub:Bitcoin2088@127.0.0.1:2088
 export ELECTRUMX=/home/ubuntu/.electrumx/electrumx_server
 export USERNAME=ubuntu
 export SERVICES=tcp://0.0.0.0:51001,rpc://0.0.0.0:8100,ws://0.0.0.0:51003
