@@ -23,6 +23,8 @@ from electrumx.lib.tx import SkipTxDeserialize
 from electrumx.lib.util import class_logger, chunks, OldTaskGroup
 from electrumx.server.db import UTXO
 
+import pickle
+
 if TYPE_CHECKING:
     from electrumx.lib.coins import Coin
 
@@ -122,6 +124,7 @@ class MemPool:
         self.log_status_secs = log_status_secs
         # Prevents mempool refreshes during fee histogram calculation
         self.lock = Lock()
+        self.cache_lock = Lock()
 
     async def _logging(self, synchronized_event):
         '''Print regular logs of mempool stats.'''
@@ -150,7 +153,7 @@ class MemPool:
     def _update_histogram(self, bin_size):
         # Build a histogram by fee rate
         histogram = defaultdict(int)
-        for tx in self.txs_cache.values():
+        for tx in self.txs.values():
             fee_rate = tx.fee / tx.size
             # use 0.1 sat/byte resolution
             # note: rounding *down* is intentional. This ensures txs
@@ -264,8 +267,11 @@ class MemPool:
                 # mempool; wait and try again
                 self.logger.debug('waiting for DB to sync')
             else:
-                self.hashXs_cache = self.hashXs.copy()
-                self.txs_cache = self.txs.copy()
+                start = time.monotonic()
+                async with self.cache_lock:
+                    self.hashXs_cache = pickle.loads(pickle.dumps(self.hashXs.copy()))
+                    self.txs_cache = pickle.loads(pickle.dumps(self.txs.copy()))
+                self.logger.info(f'pickle in {time.monotonic() - start:.2f}s')
                 synchronized_event.set()
                 synchronized_event.clear()
                 await self.api.on_mempool(touched, height)
@@ -386,10 +392,13 @@ class MemPool:
 
         Can be positive or negative.
         '''
+        async with self.cache_lock:
+            _hashXs_cache = self.hashXs_cache.copy()
+            _txs_cache = self.txs_cache.copy()
         value = 0
-        if hashX in self.hashXs_cache:
-            for hash in self.hashXs_cache[hashX]:
-                tx = self.txs_cache[hash]
+        if hashX in _hashXs_cache:
+            for hash in _hashXs_cache[hashX]:
+                tx = _txs_cache[hash]
                 value -= sum(v for h168, v in tx.in_pairs if h168 == hashX)
                 value += sum(v for h168, v in tx.out_pairs if h168 == hashX)
         return value
@@ -405,18 +414,24 @@ class MemPool:
         None, some or all of these may be spends of the hashX, but all
         actual spends of it (in the DB or mempool) will be included.
         '''
+        async with self.cache_lock:
+            _hashXs_cache = self.hashXs_cache.copy()
+            _txs_cache = self.txs_cache.copy()
         result = set()
-        for tx_hash in self.hashXs_cache.get(hashX, ()):
-            tx = self.txs_cache[tx_hash]
+        for tx_hash in _hashXs_cache.get(hashX, ()):
+            tx = _txs_cache[tx_hash]
             result.update(tx.prevouts)
         return result
 
     async def transaction_summaries(self, hashX):
         '''Return a list of MemPoolTxSummary objects for the hashX.'''
+        async with self.cache_lock:
+            _hashXs_cache = self.hashXs_cache.copy()
+            _txs_cache = self.txs_cache.copy()
         result = []
-        for tx_hash in self.hashXs_cache.get(hashX, ()):
-            tx = self.txs_cache[tx_hash]
-            has_ui = any(hash in self.txs for hash, idx in tx.prevouts)
+        for tx_hash in _hashXs_cache.get(hashX, ()):
+            tx = _txs_cache[tx_hash]
+            has_ui = any(hash in _txs_cache for hash, idx in tx.prevouts)
             result.append(MemPoolTxSummary(tx_hash, tx.fee, has_ui))
         return result
 
@@ -427,9 +442,12 @@ class MemPool:
         This does not consider if any other mempool transactions spend
         the outputs.
         '''
+        async with self.cache_lock:
+            _hashXs_cache = self.hashXs_cache.copy()
+            _txs_cache = self.txs_cache.copy()
         utxos = []
-        for tx_hash in self.hashXs_cache.get(hashX, ()):
-            tx = self.txs_cache.get(tx_hash)
+        for tx_hash in _hashXs_cache.get(hashX, ()):
+            tx = _txs_cache.get(tx_hash)
             for pos, (hX, value) in enumerate(tx.out_pairs):
                 if hX == hashX:
                     utxos.append(UTXO(-1, pos, tx_hash, 0, value))
