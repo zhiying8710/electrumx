@@ -1177,8 +1177,33 @@ class ElectrumX(SessionBase):
             "spends": await self.mempool.potential_spends(hashX)
         }
 
+    async def _hashX_listmempool2(self, hashX):
+        return {
+            "unordereds": await self.mempool.unordered_UTXOs2(hashX),
+            "spends": await self.mempool.potential_spends2(hashX)
+        }
+
     async def hashX_listmempool(self, hashX):
         mempool = await self._hashX_listmempool(hashX)
+        spends = mempool.pop("spends")
+        dict_spends = []
+        for spend in spends:
+            dict_spends.append({
+                "tx_hash": hash_to_hex_str(spend[0]),
+                "tx_pos": spend[1]
+            })
+        unordereds = mempool.pop("unordereds")
+        mempool["unordereds"] = [
+            {'tx_hash': hash_to_hex_str(utxo.tx_hash),
+             'tx_pos': utxo.tx_pos,
+             'height': utxo.height, 'value': utxo.value}
+            for utxo in unordereds
+        ]
+        mempool['spends'] = dict_spends
+        return mempool
+
+    async def hashX_listmempool2(self, hashX):
+        mempool = await self._hashX_listmempool2(hashX)
         spends = mempool.pop("spends")
         dict_spends = []
         for spend in spends:
@@ -1250,6 +1275,10 @@ class ElectrumX(SessionBase):
     async def scripthash_listmempool(self, scripthash):
         hashX = scripthash_to_hashX(scripthash)
         return await self.hashX_listmempool(hashX)
+
+    async def scripthash_listmempool2(self, scripthash):
+        hashX = scripthash_to_hashX(scripthash)
+        return await self.hashX_listmempool2(hashX)
 
     async def scripthash_subscribe(self, scripthash):
         '''Subscribe to a script hash.
@@ -1569,6 +1598,7 @@ class ElectrumX(SessionBase):
             'blockchain.scripthash.get_mempool': self.scripthash_get_mempool,
             'blockchain.scripthash.listunspent': self.scripthash_listunspent,
             'blockchain.scripthash.listmempool': self.scripthash_listmempool,
+            'blockchain.scripthash.listmempool2': self.scripthash_listmempool2,
             'blockchain.scripthash.subscribe': self.scripthash_subscribe,
             'blockchain.transaction.broadcast': self.transaction_broadcast,
             'blockchain.transaction.get': self.transaction_get,

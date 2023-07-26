@@ -243,6 +243,10 @@ class Daemon:
         # Convert hex string to bytes
         return [hex_to_bytes(block) for block in blocks]
 
+    async def getblock(self, hex_hash, verbosity=1, replace_errs=True):
+        results = await self._send_vector('getblock', [(hex_hash, verbosity)], replace_errs=replace_errs)
+        return results[0]
+
     async def mempool_hashes(self):
         '''Update our record of the daemon's mempool hashes.'''
         return await self._send_single('getrawmempool')

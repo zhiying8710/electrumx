@@ -448,3 +448,24 @@ _aiorpcx_orig_unset_task_deadline = aiorpcx.curio._unset_task_deadline
 aiorpcx.curio._set_new_deadline = _aiorpcx_monkeypatched_set_new_deadline
 aiorpcx.curio._set_task_deadline = _aiorpcx_monkeypatched_set_task_deadline
 aiorpcx.curio._unset_task_deadline = _aiorpcx_monkeypatched_unset_task_deadline
+
+
+class Queue:
+
+    def __init__(self):
+        self._queue = asyncio.queues.Queue()
+
+    def put_nowait(self, item):
+        self._queue.put_nowait(item)
+
+    async def get(self):
+        return await self._queue.get()
+
+    def task_done(self):
+        self._queue.task_done()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await self._queue.get()

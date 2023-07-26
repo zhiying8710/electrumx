@@ -94,6 +94,7 @@ class Env(EnvBase):
         self._check_and_fix_cost_limits()
 
         self.unsync_mempool = self.integer('UNSYNC_MEMPOOL', 0)
+        self.zmq_pub_address = self.default("ZMQ_PUB_ADDRESS", None)
 
         # Services last - uses some env vars above
 

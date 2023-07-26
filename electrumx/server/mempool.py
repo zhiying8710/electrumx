@@ -6,8 +6,10 @@
 # and warranty status of this software.
 
 '''Mempool handling.'''
-
+import asyncio
 import itertools
+import signal
+import struct
 import time
 from abc import ABC, abstractmethod
 from asyncio import Lock
@@ -16,11 +18,13 @@ from typing import Sequence, Tuple, TYPE_CHECKING, Type, Dict
 import math
 
 import attr
+import zmq
+import zmq.asyncio
 from aiorpcx import run_in_thread, sleep
 
 from electrumx.lib.hash import hash_to_hex_str, hex_str_to_hash
 from electrumx.lib.tx import SkipTxDeserialize
-from electrumx.lib.util import class_logger, chunks, OldTaskGroup
+from electrumx.lib.util import class_logger, chunks, OldTaskGroup, Queue
 from electrumx.server.db import UTXO
 
 import pickle
@@ -94,6 +98,10 @@ class MemPoolAPI(ABC):
         hashXs touched since the previous call.  height is the
         daemon's height at the time the mempool was obtained.'''
 
+    @abstractmethod
+    async def getblock(self, hex_hash, verbosity=1):
+        '''Query bitcoind for the block info'''
+
 
 class MemPool:
     '''Representation of the daemon's mempool.
@@ -125,6 +133,12 @@ class MemPool:
         # Prevents mempool refreshes during fee histogram calculation
         self.lock = Lock()
         self.cache_lock = Lock()
+
+        # subscribe event
+        self.subscribe_mempool_tx_hashXs = defaultdict(set)
+        self.subscribe_mempool_txs = {}
+        self.subscribe_mempool_hashXs = defaultdict(set)
+        self.subscribe_event_queue = Queue()
 
     async def _logging(self, synchronized_event):
         '''Print regular logs of mempool stats.'''
@@ -253,6 +267,7 @@ class MemPool:
         # Touched accumulates between calls to on_mempool and each
         # call transfers ownership
         touched = set()
+        subscribed = False
         while True:
             height = self.api.cached_height()
             hex_hashes = await self.api.mempool_hashes()
@@ -372,6 +387,131 @@ class MemPool:
 
         return self._accept_transactions(tx_map, utxo_map, touched)
 
+    async def _subscribe_sequence_event(self):
+        if not self.env.zmq_pub_address:
+            return
+        zmqContext = zmq.asyncio.Context()
+
+        zmqSubSocket = zmqContext.socket(zmq.SUB)
+        zmqSubSocket.setsockopt(zmq.RCVHWM, 0)
+        zmqSubSocket.setsockopt_string(zmq.SUBSCRIBE, "hashblock")
+        zmqSubSocket.setsockopt_string(zmq.SUBSCRIBE, "hashtx")
+        zmqSubSocket.setsockopt_string(zmq.SUBSCRIBE, "rawblock")
+        zmqSubSocket.setsockopt_string(zmq.SUBSCRIBE, "rawtx")
+        zmqSubSocket.setsockopt_string(zmq.SUBSCRIBE, "sequence")
+        zmqSubSocket.connect(self.env.zmq_pub_address)
+        self.logger.info(f"Connected to zmq {self.env.zmq_pub_address}")
+        mempool_hashs = None
+
+        def stop():
+            zmqContext.destroy()
+
+        def deserialize_tx(txid, raw_tx):    # This function is pure
+            if not raw_tx:
+                return
+            try:
+                tx, tx_size = self.coin.DESERIALIZER(raw_tx).read_tx_and_vsize()
+            except SkipTxDeserialize as ex:
+                self.logger.debug(f'skipping tx {txid}: {ex}')
+                return
+
+            txin_pairs = tuple((txin.prev_hash, txin.prev_idx)
+                               for txin in tx.inputs
+                               if not txin.is_generation())
+            txout_pairs = tuple((self.coin.hashX_from_script(txout.pk_script), txout.value)
+                                for txout in tx.outputs)
+            return MemPoolTx(txin_pairs, None, txout_pairs, 0, tx_size)
+
+        async def handle():
+            topic, body, seq = await zmqSubSocket.recv_multipart()
+            nonlocal mempool_hashs
+            if not mempool_hashs:
+                mempool_hashs = {hex_str_to_hash(hh) for hh in await self.api.mempool_hashes()}
+            if topic == b"sequence":
+                _hash = body[:32].hex()
+                label = chr(body[32])
+                event = (_hash, label)
+                if label == 'A' or label == 'R' or label == 'C':
+                    self.logger.info(f"Queue event {event}")
+                    self.subscribe_event_queue.put_nowait(event)
+            # schedule ourselves to receive the next message
+            asyncio.ensure_future(handle())
+
+        def drop_txs(tx_hex_hashs):
+            for _hash in tx_hex_hashs:
+                hh = hex_str_to_hash(_hash)
+                if hh in mempool_hashs:
+                    mempool_hashs.remove(hh)
+                for hashX in self.subscribe_mempool_tx_hashXs.get(hh, []):
+                    hhs = self.subscribe_mempool_hashXs.get(hashX)
+                    if hhs and hh in hhs:
+                        hhs.remove(hh)
+                if hh in self.subscribe_mempool_tx_hashXs:
+                    self.subscribe_mempool_tx_hashXs.pop(hh)
+                if hh in self.subscribe_mempool_txs:
+                    self.subscribe_mempool_txs.pop(hh)
+                self.logger.info(f"Drop tx {_hash}")
+
+        async def treat_event():
+            async for _hash, label in self.subscribe_event_queue:
+                try:
+                    if label == "A":
+                        hh = hex_str_to_hash(_hash)
+                        mempool_hashs.add(hh)
+                        _txs = await self.api.raw_transactions([_hash])
+                        tx = await asyncio.to_thread(deserialize_tx, _hash, _txs[0])
+                        if not tx:
+                            continue
+                        prevouts = tuple(prevout for prevout in tx.prevouts if prevout[0] not in mempool_hashs) # 过滤掉内存池的utxo
+                        utxos = await self.api.lookup_utxos(prevouts)
+                        utxo_map = {prevout: utxo for prevout, utxo in zip(prevouts, utxos)}
+
+                        in_pairs = []
+                        for prevout in tx.prevouts:
+                            utxo = utxo_map.get(prevout)
+                            if not utxo:
+                                prev_hash, prev_index = prevout
+                                # Raises KeyError if prev_hash is not in txs
+                                try:
+                                    utxo = self.subscribe_mempool_txs[prev_hash].out_pairs[prev_index]
+                                except KeyError:
+                                    try:
+                                        utxo = self.txs[prev_hash].out_pairs[prev_index]
+                                    except KeyError:
+                                        continue
+                            in_pairs.append(utxo)
+                        if not in_pairs:
+                            continue
+
+                        tx.in_pairs = tuple(in_pairs)
+
+                        tx.fee = max(0, (sum(v for _, v in tx.in_pairs) -
+                                         sum(v for _, v in tx.out_pairs)))
+
+                        self.subscribe_mempool_txs[hh] = tx
+                        self.subscribe_mempool_tx_hashXs[hh] = set()
+                        for hashX, _value in itertools.chain(tx.in_pairs, tx.out_pairs):
+                            self.subscribe_mempool_hashXs[hashX].add(hh)
+                            self.subscribe_mempool_tx_hashXs[hh].add(hashX)
+                        self.logger.info(f"Add new tx {_hash}")
+                    elif label == "R":
+                        drop_txs([_hash])
+                    elif label == "C":
+                        block = await self.api.getblock(_hash)
+                        while block is None:
+                            await sleep(.1)
+                        drop_txs(block['tx'])
+                        self.logger.info(f"Add new block {_hash}")
+                except Exception as e:
+                    self.logger.error("Treat tx from zmq error", exc_info=e)
+                finally:
+                    self.subscribe_event_queue.task_done()
+
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGINT, stop)
+        loop.create_task(handle())
+        loop.create_task(treat_event())
+
     #
     # External interface
     #
@@ -380,6 +520,7 @@ class MemPool:
         if self.env.unsync_mempool:
             synchronized_event.set()
             synchronized_event.clear()
+            # await self._subscribe_sequence_event()
             return
         '''Keep the mempool synchronized with the daemon.'''
         async with OldTaskGroup() as group:
@@ -452,3 +593,21 @@ class MemPool:
                 if hX == hashX:
                     utxos.append(UTXO(-1, pos, tx_hash, 0, value))
         return utxos
+
+    async def unordered_UTXOs2(self, hashX):
+        utxos = []
+        for tx_hash in self.subscribe_mempool_hashXs.get(hashX, ()):
+            tx = self.subscribe_mempool_txs.get(tx_hash)
+            for pos, (hX, value) in enumerate(tx.out_pairs):
+                if hX == hashX:
+                    utxos.append(UTXO(-1, pos, tx_hash, 0, value))
+        return utxos
+
+    async def potential_spends2(self, hashX):
+        result = set()
+        for tx_hash in self.subscribe_mempool_hashXs.get(hashX, ()):
+            tx = self.subscribe_mempool_txs[tx_hash]
+            result.update(tx.prevouts)
+        return result
+
+
