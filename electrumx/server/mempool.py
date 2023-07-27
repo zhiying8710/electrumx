@@ -132,7 +132,6 @@ class MemPool:
         self.log_status_secs = log_status_secs
         # Prevents mempool refreshes during fee histogram calculation
         self.lock = Lock()
-        self.cache_lock = Lock()
 
         # subscribe event
         self.subscribe_mempool_tx_hashXs = defaultdict(set)
@@ -283,9 +282,9 @@ class MemPool:
                 self.logger.debug('waiting for DB to sync')
             else:
                 start = time.monotonic()
-                async with self.cache_lock:
-                    self.hashXs_cache = pickle.loads(pickle.dumps(self.hashXs.copy()))
-                    self.txs_cache = pickle.loads(pickle.dumps(self.txs.copy()))
+                self.hashXs_cache = pickle.loads(pickle.dumps(self.hashXs.copy()))
+                self.txs_cache = pickle.loads(pickle.dumps(self.txs.copy()))
+
                 self.logger.info(f'pickle in {time.monotonic() - start:.2f}s')
                 synchronized_event.set()
                 synchronized_event.clear()
@@ -533,9 +532,8 @@ class MemPool:
 
         Can be positive or negative.
         '''
-        async with self.cache_lock:
-            _hashXs_cache = self.hashXs_cache.copy()
-            _txs_cache = self.txs_cache.copy()
+        _hashXs_cache = self.hashXs_cache.copy()
+        _txs_cache = self.txs_cache.copy()
         value = 0
         if hashX in _hashXs_cache:
             for hash in _hashXs_cache[hashX]:
@@ -555,9 +553,8 @@ class MemPool:
         None, some or all of these may be spends of the hashX, but all
         actual spends of it (in the DB or mempool) will be included.
         '''
-        async with self.cache_lock:
-            _hashXs_cache = self.hashXs_cache.copy()
-            _txs_cache = self.txs_cache.copy()
+        _hashXs_cache = self.hashXs_cache.copy()
+        _txs_cache = self.txs_cache.copy()
         result = set()
         for tx_hash in _hashXs_cache.get(hashX, ()):
             tx = _txs_cache[tx_hash]
@@ -566,9 +563,8 @@ class MemPool:
 
     async def transaction_summaries(self, hashX):
         '''Return a list of MemPoolTxSummary objects for the hashX.'''
-        async with self.cache_lock:
-            _hashXs_cache = self.hashXs_cache.copy()
-            _txs_cache = self.txs_cache.copy()
+        _hashXs_cache = self.hashXs_cache.copy()
+        _txs_cache = self.txs_cache.copy()
         result = []
         for tx_hash in _hashXs_cache.get(hashX, ()):
             tx = _txs_cache[tx_hash]
@@ -583,9 +579,8 @@ class MemPool:
         This does not consider if any other mempool transactions spend
         the outputs.
         '''
-        async with self.cache_lock:
-            _hashXs_cache = self.hashXs_cache.copy()
-            _txs_cache = self.txs_cache.copy()
+        _hashXs_cache = self.hashXs_cache.copy()
+        _txs_cache = self.txs_cache.copy()
         utxos = []
         for tx_hash in _hashXs_cache.get(hashX, ()):
             tx = _txs_cache.get(tx_hash)
