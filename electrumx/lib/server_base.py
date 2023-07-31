@@ -62,12 +62,12 @@ class ServerBase:
 
         if platform.system() == 'Windows':
             pass
-        elif os.geteuid() == 0 and not env.allow_root:
-            raise RuntimeError('RUNNING AS ROOT IS STRONGLY DISCOURAGED!\n'
-                               'You shoud create an unprivileged user account '
-                               'and use that.\n'
-                               'To continue as root anyway, restart with '
-                               'environment variable ALLOW_ROOT non-empty')
+        # elif os.geteuid() == 0 and not env.allow_root:
+        #     raise RuntimeError('RUNNING AS ROOT IS STRONGLY DISCOURAGED!\n'
+        #                        'You shoud create an unprivileged user account '
+        #                        'and use that.\n'
+        #                        'To continue as root anyway, restart with '
+        #                        'environment variable ALLOW_ROOT non-empty')
 
     async def serve(self, shutdown_event: asyncio.Event):
         '''Override to provide the main server functionality.
