@@ -18,4 +18,4 @@ export INITIAL_CONCURRENT=10000
 export REQUEST_SLEEP=100
 export UNSYNC_MEMPOOL=0
 
-nohup python3 electrumx_server > out-full.log 2>&1 &
+nohup python3 electrumx_server > out.log 2>&1 &
