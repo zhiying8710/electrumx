@@ -27,8 +27,6 @@ from electrumx.lib.tx import SkipTxDeserialize
 from electrumx.lib.util import class_logger, chunks, OldTaskGroup, Queue
 from electrumx.server.db import UTXO
 
-import pickle
-
 if TYPE_CHECKING:
     from electrumx.lib.coins import Coin
 
@@ -124,9 +122,7 @@ class MemPool:
         self.api = api
         self.logger = class_logger(__name__, self.__class__.__name__)
         self.txs = {}
-        self.txs_cache = {}
         self.hashXs = defaultdict(set)  # None can be a key
-        self.hashXs_cache = defaultdict(set)
         self.cached_compact_histogram = []
         self.refresh_secs = refresh_secs
         self.log_status_secs = log_status_secs
@@ -281,11 +277,6 @@ class MemPool:
                 # mempool; wait and try again
                 self.logger.debug('waiting for DB to sync')
             else:
-                start = time.monotonic()
-                self.hashXs_cache = pickle.loads(pickle.dumps(self.hashXs.copy()))
-                self.txs_cache = pickle.loads(pickle.dumps(self.txs.copy()))
-
-                self.logger.info(f'pickle in {time.monotonic() - start:.2f}s')
                 synchronized_event.set()
                 synchronized_event.clear()
                 await self.api.on_mempool(touched, height)
@@ -532,8 +523,8 @@ class MemPool:
 
         Can be positive or negative.
         '''
-        _hashXs_cache = self.hashXs_cache.copy()
-        _txs_cache = self.txs_cache.copy()
+        _hashXs_cache = self.hashXs.copy()
+        _txs_cache = self.txs.copy()
         value = 0
         if hashX in _hashXs_cache:
             for hash in _hashXs_cache[hashX]:
@@ -553,8 +544,8 @@ class MemPool:
         None, some or all of these may be spends of the hashX, but all
         actual spends of it (in the DB or mempool) will be included.
         '''
-        _hashXs_cache = self.hashXs_cache.copy()
-        _txs_cache = self.txs_cache.copy()
+        _hashXs_cache = self.hashXs.copy()
+        _txs_cache = self.txs.copy()
         result = set()
         for tx_hash in _hashXs_cache.get(hashX, ()):
             tx = _txs_cache[tx_hash]
@@ -563,8 +554,8 @@ class MemPool:
 
     async def transaction_summaries(self, hashX):
         '''Return a list of MemPoolTxSummary objects for the hashX.'''
-        _hashXs_cache = self.hashXs_cache.copy()
-        _txs_cache = self.txs_cache.copy()
+        _hashXs_cache = self.hashXs.copy()
+        _txs_cache = self.txs.copy()
         result = []
         for tx_hash in _hashXs_cache.get(hashX, ()):
             tx = _txs_cache[tx_hash]
@@ -579,8 +570,8 @@ class MemPool:
         This does not consider if any other mempool transactions spend
         the outputs.
         '''
-        _hashXs_cache = self.hashXs_cache.copy()
-        _txs_cache = self.txs_cache.copy()
+        _hashXs_cache = self.hashXs.copy()
+        _txs_cache = self.txs.copy()
         utxos = []
         for tx_hash in _hashXs_cache.get(hashX, ()):
             tx = _txs_cache.get(tx_hash)
